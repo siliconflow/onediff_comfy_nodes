@@ -1,5 +1,3 @@
 onediff
---pre
--f https://oneflow-pro.oss-cn-beijing.aliyuncs.com/branch/community/cu118
-oneflow
-
+# Package below is only suitable for ComfyUI Manager
+--pre --find-links https://oneflow-pro.oss-cn-beijing.aliyuncs.com/branch/community/cu118 oneflow
