@@ -1,9 +1,10 @@
+import torch
 import comfy
 import oneflow as flow
 from comfy.controlnet import ControlLoraOps, ControlNet, ControlLora
 from onediff.infer_compiler import oneflow_compile
 
-__all__ = ["OneDiffControlNet", "OneDiffControlLora"]
+__all__ = ["OneDiffControlLora"]
 
 
 def set_attr_of(obj, attr, value):
@@ -23,63 +24,43 @@ def set_attr_of(obj, attr, value):
     if exist_oneflow_module:
         _set_attr_of(obj, attr, value)
     else:
-        comfy.utils.set_attr(obj, attr, value)
-
-
-class OneDiffControlNet(ControlNet):
-    @classmethod
-    def from_controlnet(cls, controlnet: ControlNet):
-        c = cls(
-            controlnet.control_model,
-            global_average_pooling=controlnet.global_average_pooling,
-        )
-        c.cond_hint_original = controlnet.cond_hint_original
-        c.strength = controlnet.strength
-        c.timestep_percent_range = controlnet.timestep_percent_range
-        return c
-
-    def pre_run(self, model, percent_to_timestep_function):
-        super().pre_run(model, percent_to_timestep_function)
-        # compile to oneflow
-        self.control_model = oneflow_compile(self.control_model)
-
-    def copy(self):
-        c = OneDiffControlNet(
-            self.control_model, global_average_pooling=self.global_average_pooling
-        )
-        self.copy_to(c)
-        return c
+        attrs = attr.split(".")
+        for name in attrs[:-1]:
+            obj = getattr(obj, name)
+        prev = getattr(obj, attrs[-1])
+        setattr(obj, attrs[-1], torch.nn.Parameter(value, requires_grad=False))
+        del prev
 
 
 class OneDiffControlLora(ControlLora):
-    oneflow_model = None
-
     @classmethod
-    def from_controllora(cls, controlnet: ControlLora):
+    def from_controllora(
+        cls, controlnet: ControlLora, *, gen_compile_options: callable = None
+    ):
         c = cls(
             controlnet.control_weights,
             global_average_pooling=controlnet.global_average_pooling,
             device=controlnet.device,
         )
-        c.cond_hint_original = controlnet.cond_hint_original
-        c.strength = controlnet.strength
-        c.timestep_percent_range = controlnet.timestep_percent_range
+        controlnet.copy_to(c)
+        c._oneflow_model = None
+        c.gen_compile_options = gen_compile_options
         return c
 
     def pre_run(self, model, percent_to_timestep_function):
         dtype = model.get_dtype()
         # super().pre_run(model, percent_to_timestep_function)
         ControlNet.pre_run(self, model, percent_to_timestep_function)
+        self.manual_cast_dtype = model.manual_cast_dtype
 
-        if OneDiffControlLora.oneflow_model is None:
+        if self._oneflow_model is None:
             controlnet_config = model.model_config.unet_config.copy()
             controlnet_config.pop("out_channels")
             controlnet_config["hint_channels"] = self.control_weights[
                 "input_hint_block.0.weight"
             ].shape[1]
-
-            self.manual_cast_dtype = model.manual_cast_dtype
             dtype = model.get_dtype()
+
             if self.manual_cast_dtype is None:
 
                 class control_lora_ops(ControlLoraOps, comfy.ops.disable_weight_init):
@@ -96,9 +77,18 @@ class OneDiffControlLora(ControlLora):
             self.control_model = comfy.cldm.cldm.ControlNet(**controlnet_config)
             self.control_model.to(dtype)
             self.control_model.to(comfy.model_management.get_torch_device())
-            OneDiffControlLora.oneflow_model = oneflow_compile(self.control_model)
 
-        self.control_model = OneDiffControlLora.oneflow_model
+            compile_options = (
+                self.gen_compile_options(self.control_model)
+                if self.gen_compile_options is not None
+                else {}
+            )
+
+            self._oneflow_model = oneflow_compile(
+                self.control_model, options=compile_options
+            )
+
+        self.control_model = self._oneflow_model
 
         diffusion_model = model.diffusion_model
         sd = diffusion_model.state_dict()
@@ -109,7 +99,7 @@ class OneDiffControlLora(ControlLora):
             )
             try:
                 set_attr_of(self.control_model, k, weight)
-            except:
+            except Exception as e:
                 pass
 
         for k in self.control_weights:
@@ -121,14 +111,13 @@ class OneDiffControlLora(ControlLora):
                 )
                 set_attr_of(self.control_model, k, weight)
 
-        lazy_loader = getattr(OneDiffControlLora, "lazy_load_hook", None)
-        if lazy_loader and callable(lazy_loader):
-            lazy_loader(OneDiffControlLora.oneflow_model)
-            delattr(OneDiffControlLora, "lazy_load_hook")
-
     def copy(self):
         c = OneDiffControlLora(
-            self.control_weights, global_average_pooling=self.global_average_pooling
+            self.control_weights,
+            global_average_pooling=self.global_average_pooling,
+            device=self.device,
         )
         self.copy_to(c)
+        c._oneflow_model = self._oneflow_model
+        c.gen_compile_options = self.gen_compile_options
         return c

@@ -85,11 +85,11 @@ class OneFlowSpeedUpModelPatcher(comfy.model_patcher.ModelPatcher):
     def add_patches(self, patches, strength_patch=1.0, strength_model=1.0):
         from comfy.ldm.modules.attention import CrossAttention
 
-        is_diffusers_quant_available = False
+        is_onediff_quant_available = False
         try:
-            import diffusers_quant
+            import onediff_quant
 
-            is_diffusers_quant_available = True
+            is_onediff_quant_available = True
         except:
             pass
 
@@ -125,10 +125,10 @@ class OneFlowSpeedUpModelPatcher(comfy.model_patcher.ModelPatcher):
                 patch_value = tuple(tmp_list + [module])
                 patches[to_qkv_w_name] = (patch_type, patch_value)
 
-            if is_diffusers_quant_available:
+            if is_onediff_quant_available:
                 if isinstance(
-                    module, diffusers_quant.DynamicQuantLinearModule
-                ) or isinstance(module, diffusers_quant.DynamicQuantConvModule):
+                    module, onediff_quant.DynamicQuantLinearModule
+                ) or isinstance(module, onediff_quant.DynamicQuantConvModule):
                     w_name = f"diffusion_model.{name}.weight"
                     if w_name in patches:
                         patch_type = "onediff_int8"
@@ -151,11 +151,11 @@ class OneFlowSpeedUpModelPatcher(comfy.model_patcher.ModelPatcher):
         return list(p)
 
     def calculate_weight(self, patches, weight, key):
-        is_diffusers_quant_available = False
+        is_onediff_quant_available = False
         try:
-            import diffusers_quant
+            import onediff_quant
 
-            is_diffusers_quant_available = True
+            is_onediff_quant_available = True
         except:
             pass
         for p in patches:
@@ -384,11 +384,11 @@ class OneFlowSpeedUpModelPatcher(comfy.model_patcher.ModelPatcher):
                 is_rewrite_qkv = True if "to_qkv" in key else False
                 is_quant = False
                 if (
-                    is_diffusers_quant_available
+                    is_onediff_quant_available
                     and len(v) == 5
                     and (
-                        isinstance(v[4], diffusers_quant.DynamicQuantLinearModule)
-                        or isinstance(v[4], diffusers_quant.DynamicQuantConvModule)
+                        isinstance(v[4], onediff_quant.DynamicQuantLinearModule)
+                        or isinstance(v[4], onediff_quant.DynamicQuantConvModule)
                     )
                 ):
                     is_quant = True
@@ -496,6 +496,7 @@ class OneFlowDeepCacheSpeedUpModelPatcher(OneFlowSpeedUpModelPatcher):
         weight_inplace_update=False,
         *,
         use_graph=None,
+        gen_compile_options=None,
     ):
         from onediff.infer_compiler import oneflow_compile
         from onediff.infer_compiler.with_oneflow_compile import DeployableModule
@@ -506,17 +507,26 @@ class OneFlowDeepCacheSpeedUpModelPatcher(OneFlowSpeedUpModelPatcher):
         self.size = size
         self.model = copy.copy(model)
         self.model.__dict__["_modules"] = copy.copy(model.__dict__["_modules"])
-        self.deep_cache_unet = oneflow_compile(
-            DeepCacheUNet(self.model.diffusion_model, cache_layer_id, cache_block_id),
-            use_graph=use_graph,
+
+        self.deep_cache_unet = DeepCacheUNet(
+            self.model.diffusion_model, cache_layer_id, cache_block_id
         )
-        self.fast_deep_cache_unet = oneflow_compile(
-            FastDeepCacheUNet(
-                self.model.diffusion_model, cache_layer_id, cache_block_id
-            ),
-            use_graph=use_graph,
+
+        self.fast_deep_cache_unet = FastDeepCacheUNet(
+            self.model.diffusion_model, cache_layer_id, cache_block_id
         )
-        self.model._register_state_dict_hook(state_dict_hook)
+        if use_graph:
+            gen_compile_options = gen_compile_options or (lambda x: {})
+            compile_options = gen_compile_options(self.deep_cache_unet)
+            self.deep_cache_unet = oneflow_compile(
+                self.deep_cache_unet, use_graph=use_graph, options=compile_options,
+            )
+            compile_options = gen_compile_options(self.fast_deep_cache_unet)
+            self.fast_deep_cache_unet = oneflow_compile(
+                self.fast_deep_cache_unet, use_graph=use_graph, options=compile_options,
+            )
+            self.model._register_state_dict_hook(state_dict_hook)
+
         self.patches = {}
         self.backup = {}
         self.model_options = {"transformer_options": {}}
@@ -527,3 +537,50 @@ class OneFlowDeepCacheSpeedUpModelPatcher(OneFlowSpeedUpModelPatcher):
             self.current_device = self.offload_device
         else:
             self.current_device = current_device
+
+
+def get_mixed_speedup_class(module_cls):
+    class MixedSpeedUpModelPatcher(OneFlowSpeedUpModelPatcher, module_cls):
+        def __init__(
+            self,
+            model_patcher,
+            load_device,
+            offload_device,
+            size=0,
+            current_device=None,
+            weight_inplace_update=False,
+            *,
+            use_graph=None,
+        ):
+            self.__dict__.update(**model_patcher.__dict__)
+            OneFlowSpeedUpModelPatcher.__init__(
+                self,
+                model_patcher.model,
+                load_device,
+                offload_device,
+                size,
+                current_device,
+                weight_inplace_update,
+                use_graph=use_graph,
+            )
+
+        def clone(self):
+            cloned = module_cls.clone(self)
+            n = OneFlowSpeedUpModelPatcher(
+                cloned.model,
+                self.load_device,
+                self.offload_device,
+                self.size,
+                self.current_device,
+                weight_inplace_update=self.weight_inplace_update,
+            )
+            n.patches = {}
+            for k in self.patches:
+                n.patches[k] = self.patches[k][:]
+
+            n.object_patches = self.object_patches.copy()
+            n.model_options = copy.deepcopy(self.model_options)
+            n.model_keys = self.model_keys
+            return n
+
+    return MixedSpeedUpModelPatcher
