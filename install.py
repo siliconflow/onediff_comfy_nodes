@@ -1,5 +1,21 @@
 import subprocess
 import sys
+import os
+import git
+import shutil
+from tqdm.auto import tqdm
+from git.remote import RemoteProgress
+
+class GitProgress(RemoteProgress):
+    def __init__(self):
+        super().__init__()
+        self.pbar = tqdm()
+
+    def update(self, op_code, cur_count, max_count=None, message=''):
+        self.pbar.total = max_count
+        self.pbar.n = cur_count
+        self.pbar.pos = 0
+        self.pbar.refresh()
 
 command = [
     "python3",
@@ -36,3 +52,22 @@ if return_code != 0:
 else:
     print("Installation successful")
 
+onediff_url = "https://github.com/siliconflow/onediff"
+comfy_path = os.environ.get('COMFYUI_PATH')
+custom_nodes_path = os.path.join(comfy_path, 'custom_nodes')
+repo_path = os.path.join(custom_nodes_path, "onediff")
+
+repo = git.Repo.clone_from(onediff_url, repo_path, recursive=True, progress=GitProgress())
+repo.git.clear_cache()
+repo.close()
+
+onediff_path = os.path.join(custom_nodes_path, "onediff")
+old_onediff_comfy_nodes_path = os.path.join(custom_nodes_path, "onediff_comfy_nodes")
+new_onediff_comfy_nodes_path = os.path.join(onediff_path, "onediff_comfy_nodes")
+
+shutil.move(os.path.abspath(__file__), onediff_path)
+shutil.rmtree(old_onediff_comfy_nodes_path)
+shutil.move(new_onediff_comfy_nodes_path, custom_nodes_path)
+shutil.rmtree(onediff_path)
+
+print("Onediff comfy nodes are ready.")
