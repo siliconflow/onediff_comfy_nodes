@@ -57,6 +57,7 @@ comfy_path = os.environ.get('COMFYUI_PATH')
 custom_nodes_path = os.path.join(comfy_path, 'custom_nodes')
 repo_path = os.path.join(custom_nodes_path, "onediff")
 
+print(f"Download: git clone '{onediff_url}'")
 repo = git.Repo.clone_from(onediff_url, repo_path, recursive=True, progress=GitProgress())
 repo.git.clear_cache()
 repo.close()
