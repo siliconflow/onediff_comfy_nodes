@@ -6,6 +6,10 @@ import shutil
 from tqdm.auto import tqdm
 from git.remote import RemoteProgress
 
+if sys.platform.startswith("linux"):
+    raise OSError("Onediff does not support Windows systems. "
+                  "Please use WSL2: https://github.com/siliconflow/onediff/wiki")
+
 class GitProgress(RemoteProgress):
     def __init__(self):
         super().__init__()
