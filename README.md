@@ -30,4 +30,4 @@ comfy launch -- --gpu-only
 ```
 
 The following image is a loadable workflow file
-![](./speedup.png)
+![](./comfyui_screenshot.png)
