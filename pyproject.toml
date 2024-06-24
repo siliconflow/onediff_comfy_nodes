@@ -1,0 +1,15 @@
+[project]
+name = "onediff_comfy_nodes"
+description = "[a/Onediff](https://github.com/siliconflow/onediff) ComfyUI Nodes."
+version = "1.0.0"
+license = "LICENSE"
+dependencies = ["onediff"]
+
+[project.urls]
+Repository = "https://github.com/siliconflow/onediff_comfy_nodes"
+#  Used by Comfy Registry https://comfyregistry.org
+
+[tool.comfy]
+PublisherId = ""
+DisplayName = "onediff_comfy_nodes"
+Icon = ""
